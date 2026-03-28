@@ -134,6 +134,53 @@ const orderHandler = (io, socket) => {
       });
     }
   });
-};
 
+  // admin event ===================================>
+
+  // admin login
+  socket.on('adminLogin', async (data, callback) => {
+    try {
+      if (data.password === process.env.ADMIN_PASSWORD) {
+        socket.isAdmin = true;
+        socket.join('admins');
+        console.log('Admin logged in:', socket.id);
+        callback({
+          success: true,
+        });
+      }
+    } catch (error) {
+      console.error('Admin login error', error);
+      callback({
+        success: false,
+        message: error.message || 'Failed to login',
+      });
+    }
+  });
+
+  // get all orders for admin
+  socket.on('getAllOrders', async (data, callback) => {
+    try {
+      if (!socket.isAdmin) {
+        return callback({
+          success: false,
+          message: 'Unauthorized',
+        });
+      }
+      const orderCollection = getCollection('orders');
+      const filter = data?.status ? { status: data.status } : {};
+      const orders = await orderCollection.find(filter).sort({ createdAt: -1 }).toArray();
+
+      callback({
+        success: true,
+        orders,
+      });
+    } catch (error) {
+      console.error('Get all orders error', error);
+      callback({
+        success: false,
+        message: error.message || 'Failed to retrieve orders',
+      });
+    }
+  });
+};
 export default orderHandler;
