@@ -312,5 +312,101 @@ const orderHandler = (io, socket) => {
       });
     }
   });
+
+  // reject order
+  socket.on('rejectOrder', async (data, callback) => {
+    try {
+      if (!socket.isAdmin) {
+        return callback({
+          success: false,
+          message: 'Unauthorized',
+        });
+      }
+
+      const orderCollection = getCollection('orders');
+      const order = await orderCollection.findOne({ orderId: data.orderId });
+
+      if (!order || order.status !== 'pending') {
+        return callback({
+          success: false,
+          message: 'Order not found or not pending',
+        });
+      }
+
+      const result = await orderCollection.findOneAndUpdate(
+        { orderId: data.orderId },
+        {
+          $set: {
+            status: 'cancelled',
+          },
+          $push: {
+            statusHistory: {
+              status: 'cancelled',
+              timestamp: new Date(),
+              by: socket.id,
+              note: data.note || 'Order cancelled by Admin',
+            },
+          },
+        },
+        { returnDocument: 'after' }
+      );
+
+      io.to(`order_${data.orderId}`).emit('orderRejected', {
+        orderId: data.orderId,
+        reason: data.reason || 'Order rejected by Admin',
+      });
+
+      socket.to('admins').emit('orderRejected', {
+        reason: data.reason || 'Order rejected by Admin',
+      });
+
+      callback({
+        success: true,
+      });
+    } catch (error) {
+      console.error('Reject order error', error);
+      callback({
+        success: false,
+        message: error.message || 'Failed to reject order',
+      });
+    }
+  });
+
+  // get live stats for admin dashboard
+  socket.on('getLiveStats', async (data, callback) => {
+    try {
+      if (!socket.isAdmin) {
+        return callback({
+          success: false,
+          message: 'Unauthorized',
+        });
+      }
+      const orderCollection = getCollection('orders');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const stats = {
+        totalToday: await orderCollection.countDocuments({ createdAt: { $gte: today } }),
+        pending: await orderCollection.countDocuments({ status: 'pending' }),
+        confirmed: await orderCollection.countDocuments({ status: 'confirmed' }),
+        preparing: await orderCollection.countDocuments({ status: 'preparing' }),
+        ready: await orderCollection.countDocuments({ status: 'ready' }),
+        outForDelivery: await orderCollection.countDocuments({ status: 'out_for_delivery' }),
+        delivered: await orderCollection.countDocuments({ status: 'delivered' }),
+        cancelled: await orderCollection.countDocuments({ status: 'cancelled' }),
+      };
+
+      callback({
+        success: true,
+        stats,
+      });
+    } catch (error) {
+      console.error('Get live stats error', error);
+      callback({
+        success: false,
+        message: error.message || 'Failed to retrieve live stats',
+      });
+    }
+  });
 };
 export default orderHandler;
