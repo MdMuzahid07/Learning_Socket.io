@@ -1,5 +1,10 @@
 import { getCollection } from '../config/database.js';
-import { calculateTotal, createOrderDocument, generateOrderId } from '../utils/helper.js';
+import {
+  calculateTotal,
+  createOrderDocument,
+  generateOrderId,
+  isValidStatusTransition,
+} from '../utils/helper.js';
 
 const orderHandler = (io, socket) => {
   console.log('📦 Order handler initialized for socket:', socket.id);
@@ -179,6 +184,131 @@ const orderHandler = (io, socket) => {
       callback({
         success: false,
         message: error.message || 'Failed to retrieve orders',
+      });
+    }
+  });
+
+  // order status update by admin
+  socket.on('updateOrderStatus', async (data, callback) => {
+    try {
+      const orderCollection = getCollection('orders');
+      const order = await orderCollection.findOne({ orderId: data.orderId });
+
+      if (!order) {
+        return callback({
+          success: false,
+          message: 'Order not found',
+        });
+      }
+
+      if (!isValidStatusTransition(order.status, data.newStatus)) {
+        return callback({
+          success: false,
+          message: `Invalid status transition from ${order.status} to ${data.newStatus}`,
+        });
+      }
+
+      const result = await orderCollection.findOneAndUpdate(
+        { orderId: data.orderId },
+        {
+          $set: {
+            status: data.newStatus,
+          },
+          $push: {
+            statusHistory: {
+              status: data.newStatus,
+              timestamp: new Date(),
+              by: socket.id,
+              note: data.note || `Status changed to ${data.newStatus}`,
+            },
+          },
+        },
+        { returnDocument: 'after' }
+      );
+
+      io.to(`order_${data.orderId}`).emit('orderStatusUpdated', {
+        orderId: data.orderId,
+        status: data.newStatus,
+        order: result,
+      });
+
+      socket.to('admins').emit('orderStatusChanged', {
+        orderId: data.orderId,
+        status: data.newStatus,
+      });
+
+      callback({
+        success: true,
+        order: result,
+      });
+    } catch (error) {
+      console.error('Update order status error', error);
+      callback({
+        success: false,
+        message: error.message || 'Failed to update order status',
+      });
+    }
+  });
+
+  // accept order
+  socket.on('acceptOrder', async (data, callback) => {
+    try {
+      if (!socket.isAdmin) {
+        return callback({
+          success: false,
+          message: 'Unauthorized',
+        });
+      }
+
+      const orderCollection = getCollection('orders');
+      const order = await orderCollection.findOne({ orderId: data.orderId });
+
+      if (!order || order.status !== 'pending') {
+        return callback({
+          success: false,
+          message: 'Order not found or not pending',
+        });
+      }
+
+      const estimatedTime = data.estimatedTime || 30;
+
+      const result = await orderCollection.findOneAndUpdate(
+        { orderId: data.orderId },
+        {
+          $set: {
+            status: 'confirmed',
+            estimatedTime,
+          },
+          $push: {
+            statusHistory: {
+              status: 'confirmed',
+              timestamp: new Date(),
+              by: socket.id,
+              note: `Order accepted with estimated time ${estimatedTime} mins`,
+            },
+          },
+        },
+        { returnDocument: 'after' }
+      );
+
+      io.to(`order_${data.orderId}`).emit('orderAccepted', {
+        orderId: data.orderId,
+        estimatedTime,
+      });
+
+      socket.to('admins').emit('orderAccepted', {
+        orderId: data.orderId,
+      });
+
+      callback({
+        success: true,
+        order: result,
+      });
+    } catch (error) {
+      console.error('Accept order error', error);
+      callback({
+        success: false,
+        message: error.message || 'Failed to accept order',
       });
     }
   });
